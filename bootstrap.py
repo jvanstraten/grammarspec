@@ -1,7 +1,9 @@
+# Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn
 
 import re
 from collections import namedtuple
 import json
+import subprocess
 
 _Loc = namedtuple("_Loc", ["line", "col", "offs"])
 
@@ -261,6 +263,7 @@ class ParserFactory:
                 return node, tokens
         return out_parser
 
+
 class Parser:
     def __init__(self, name):
         super().__init__()
@@ -301,6 +304,7 @@ class Parser:
                 print(token)
             raise ValueError(f"parse error: {eof_node.data} at {eof_node.span}")
         return node
+
 
 class AstGrammar:
     def _clean_doc(self, doc):
@@ -453,11 +457,73 @@ class AstGrammar:
         return self.parse(name, list(self.tokenize(s)))
 
 
+def chumsky_construct(elements, name_lookup, case_convert, type_name, variant_names):
+    if variant_names:
+        assert len(elements) == len(variant_names)
+    children = []
+    for index, element in enumerate(elements):
+        parser = element.as_chumsky(name_lookup, case_convert)
+        tup_len = element.as_chumsky_tuple_length()
+        if tup_len is None:
+            map_out = "x"
+            map_in = map_out
+        elif tup_len == 1:
+            map_out = "x"
+            map_in = f"({map_out},)"
+        else:
+            map_out = ", ".join(map(lambda x: f"x{x+1}", range(tup_len)))
+            map_in = f"({map_out})"
+        if variant_names:
+            variant = f"{type_name}::{variant_names[index]}"
+        else:
+            variant = type_name
+        children.append(f"{parser}.map(|{map_in}| {variant}({map_out})")
+    result = [children[0]]
+    for index, child in enumerate(children[1:]):
+        result.append(f".or({child})")
+    return "".join(result)
+
+
+def chumsky_define(fil, elements, name_lookup, case_convert, type_name, type_doc, variant_names, variant_docs):
+    if type_doc:
+        for line in type_doc.split("\n"):
+            fil.write(f"/// {line}\n")
+    if variant_names:
+        assert len(elements) == len(variant_names)
+        assert len(elements) == len(variant_docs)
+        fil.write("#[derive(Clone, Debug, PartialEq, Eq, Hash)]\n")
+        fil.write(f"pub enum {type_name}<L: types::Location> {{\n")
+        first = True
+        for element, variant, doc in zip(elements, variant_names, variant_docs):
+            typ = element.as_chumsky_type(name_lookup, case_convert)
+            if not typ.startswith("("):
+                typ = f"({typ})"
+            if first:
+                first = False
+            else:
+                fil.write("\n")
+            if doc:
+                for line in doc.split("\n"):
+                    fil.write(f"    /// {line}\n")
+            fil.write(f"    {variant}{typ},\n")
+        fil.write("}\n\n")
+    else:
+        assert len(elements) == 1
+        typ = elements[0].as_chumsky_type(name_lookup, case_convert)
+        if not typ.startswith("("):
+            typ = f"({typ})"
+        fil.write(f"pub struct {type_name}{typ};\n\n")
+
 
 class AstAlternation:
+    name_counter = 0
+
     def __init__(self, elements):
         super().__init__()
         self.elements = elements
+        if len(self.elements) > 1:
+            type(self).name_counter += 1
+            self.rust_enum_name = f"UnnamedAlter{type(self).name_counter}"
 
     @classmethod
     def from_parse_tree(cls, node, case_convert):
@@ -475,17 +541,55 @@ class AstAlternation:
         for element in self.elements:
             yield from element.gather_used_tokens(case_convert)
 
+    def gather_used_fragments(self):
+        for element in self.elements:
+            yield from element.gather_used_fragments()
+
     def as_regex(self, rule_lookup, recursion):
         return "|".join((f"(?:{element.as_regex(rule_lookup, recursion)})" for element in self.elements))
 
     def as_parser(self, parser_lookup, case_convert):
         return ParserFactory().alter(*(element.as_parser(parser_lookup, case_convert) for element in self.elements))
 
+    def as_chumsky(self, name_lookup, case_convert):
+        if len(self.elements) > 1:
+            return chumsky_construct(
+                self.elements,
+                name_lookup,
+                case_convert,
+                self.rust_enum_name,
+                [f"Option{index+1}" for index in range(len(self.elements))]
+            )
+        return self.elements[0].as_chumsky(name_lookup, case_convert)
+
+    def as_chumsky_type(self, name_lookup, case_convert):
+        if len(self.elements) > 1:
+            return self.rust_enum_name
+        return self.elements[0].as_chumsky_type(name_lookup, case_convert)
+
+    def as_chumsky_tuple_length(self):
+        return None
+
+    def define_chumsky_types(self, fil, name_lookup, case_convert):
+        if len(self.elements) > 1:
+            return chumsky_define(
+                fil,
+                self.elements,
+                name_lookup,
+                case_convert,
+                self.rust_enum_name,
+                None,
+                [f"Option{index+1}" for index in range(len(self.elements))],
+                [None for _ in self.elements]
+            )
+        for element in self.elements:
+            element.define_chumsky_types(fil, name_lookup, case_convert)
+
     def __eq__(self, other):
         return type(self) == type(other) and self.elements == other.elements
 
     def __hash__(self):
-        return hash((type(self), self.elements))
+        return hash((type(self), *self.elements))
 
 
 class AstConcatenation:
@@ -509,17 +613,48 @@ class AstConcatenation:
         for element in self.elements:
             yield from element.gather_used_tokens(case_convert)
 
+    def gather_used_fragments(self):
+        for element in self.elements:
+            yield from element.gather_used_fragments()
+
     def as_regex(self, rule_lookup, recursion):
         return "".join((f"(?:{element.as_regex(rule_lookup, recursion)})" for element in self.elements))
 
     def as_parser(self, parser_lookup, case_convert):
         return ParserFactory().concat(*(element.as_parser(parser_lookup, case_convert) for element in self.elements))
 
+    def as_chumsky(self, name_lookup, case_convert):
+        children = [child.as_chumsky(name_lookup, case_convert) for child in self.elements]
+        result = [children[0]]
+        if len(children) > 1:
+            in_pattern = "x1"
+            out_pattern = "x1"
+            for index, child in enumerate(children[1:]):
+                result.append(f".then({child})")
+                in_pattern = f"({in_pattern}, x{index+2})"
+                out_pattern = f"{out_pattern}, x{index+2}"
+            result.append(f".map(|{in_pattern}| ({out_pattern}))")
+        return "".join(result)
+
+    def as_chumsky_type(self, name_lookup, case_convert):
+        children = (child.as_chumsky_type(name_lookup, case_convert) for child in self.elements)
+        return "(" + ", ".join(children) + ")"
+
+    def as_chumsky_tuple_length(self):
+        if len(children) == 1:
+            return None
+        else:
+            return len(children)
+
+    def define_chumsky_types(self, fil, name_lookup, case_convert):
+        for element in self.elements:
+            element.define_chumsky_types(fil, name_lookup, case_convert)
+
     def __eq__(self, other):
         return type(self) == type(other) and self.elements == other.elements
 
     def __hash__(self):
-        return hash((type(self), self.elements))
+        return hash((type(self), *self.elements))
 
 
 class AstRepetition:
@@ -566,6 +701,9 @@ class AstRepetition:
     def gather_used_tokens(self, case_convert):
         yield from self.child.gather_used_tokens(case_convert)
 
+    def gather_used_fragments(self):
+        yield from self.child.gather_used_fragments()
+
     def as_regex(self, rule_lookup, recursion):
         return f"(?:{self.child.as_regex(rule_lookup, recursion)}){self.mode}"
 
@@ -578,11 +716,35 @@ class AstRepetition:
             return ParserFactory().many(self.child.as_parser(parser_lookup, case_convert))
         assert False
 
+    def as_chumsky(self, name_lookup, case_convert):
+        child = self.child.as_chumsky(name_lookup, case_convert)
+        if self.mode == "?":
+            return f"{child}.or_not()"
+        elif self.mode == "*":
+            return f"{child}.repeated()"
+        elif self.mode == "+":
+            return f"{child}.repeated().at_least(1)"
+        assert False
+
+    def as_chumsky_type(self, name_lookup, case_convert):
+        child = self.child.as_chumsky_type(name_lookup, case_convert)
+        if self.mode == "?":
+            return f"Option<{child}>"
+        elif self.mode in "*+":
+            return f"Vec<{child}>"
+        assert False
+
+    def as_chumsky_tuple_length(self):
+        return None
+
+    def define_chumsky_types(self, fil, name_lookup, case_convert):
+        self.child.define_chumsky_types(fil, name_lookup, case_convert)
+
     def __eq__(self, other):
         return type(self) == type(other) and self.child == other.child and self.mode == other.mode
 
     def __hash__(self):
-        return hash((type(self), self.child, self.other))
+        return hash((type(self), self.child, self.mode))
 
 
 class AstLiteral:
@@ -665,6 +827,9 @@ class AstLiteral:
     def gather_used_tokens(self, case_convert):
         yield case_convert(self.as_symbol())
 
+    def gather_used_fragments(self):
+        return []
+
     @staticmethod
     def escape_regex(s):
         escaped = ""
@@ -675,11 +840,39 @@ class AstLiteral:
                 escaped += c
         return escaped
 
+    @staticmethod
+    def escape_rust(s):
+        escaped = ""
+        for c in s:
+            if c in "\\\"":
+                escaped += f"\\{c}"
+            elif c == "\n":
+                escaped += "\\n"
+            elif c == "\r":
+                escaped += "\\r"
+            elif c == "\t":
+                escaped += "\\t"
+            else:
+                escaped += c
+        return escaped
+
     def as_regex(self, rule_lookup, recursion):
         return self.escape_regex(self.s)
 
     def as_parser(self, parser_lookup, case_convert):
         return ParserFactory().term(case_convert(self.as_symbol()))
+
+    def as_chumsky(self, name_lookup, case_convert):
+        return f"just(types::Terminal::new_pattern(TokenType::{case_convert(self.as_symbol())}))"
+
+    def as_chumsky_type(self, name_lookup, case_convert):
+        return f"types::Terminal<TokenType, L>"
+
+    def as_chumsky_tuple_length(self):
+        return None
+
+    def define_chumsky_types(self, fil, name_lookup, case_convert):
+        pass
 
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
@@ -705,6 +898,9 @@ class AstReference:
     def gather_used_tokens(self, case_convert):
         yield self.s
 
+    def gather_used_fragments(self):
+        yield self.s
+
     def as_regex(self, rule_lookup, recursion):
         if self.s in recursion:
             raise ValueError(f"recursive token rule: {recursion}")
@@ -719,6 +915,22 @@ class AstReference:
             return parser_lookup[self.s]
         else:
             return ParserFactory().term(self.s)
+
+    def as_chumsky(self, name_lookup, case_convert):
+        if self.s in name_lookup:
+            return name_lookup[self.s]
+        return f"just(types::Terminal::new_pattern(TokenType::{case_convert(self.s)}))"
+
+    def as_chumsky_type(self, name_lookup, case_convert):
+        if self.s in name_lookup:
+            return f"Pt{self.s}<L>"
+        return f"types::Terminal<TokenType, L>"
+
+    def as_chumsky_tuple_length(self):
+        return None
+
+    def define_chumsky_types(self, fil, name_lookup, case_convert):
+        pass
 
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
@@ -764,6 +976,9 @@ class AstCharacterSet:
     def gather_used_tokens(self, case_convert):
         raise ValueError("character sets are only allowed within the context of token rules")
 
+    def gather_used_fragments(self):
+        return []
+
     def as_regex(self, rule_lookup, recursion):
         body = ""
         for a, b in self.ranges:
@@ -781,11 +996,23 @@ class AstCharacterSet:
     def as_parser(self, parser_lookup, case_convert):
         raise ValueError("character sets are only allowed within the context of token rules")
 
+    def as_chumsky(self, name_lookup, case_convert):
+        raise ValueError("character sets are only allowed within the context of token rules")
+
+    def as_chumsky_type(self, name_lookup, case_convert):
+        raise ValueError("character sets are only allowed within the context of token rules")
+
+    def as_chumsky_tuple_length(self):
+        return None
+
+    def define_chumsky_types(self, fil, name_lookup, case_convert):
+        pass
+
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
 
     def __hash__(self):
-        return hash((type(self), self.s))
+        return hash((type(self), self.inverted, *self.ranges))
 
 
 if __name__ == "__main__":
@@ -896,3 +1123,110 @@ if __name__ == "__main__":
     # Assert that both result in exactly the same thing.
     assert tokens == tokens2
     assert parse_tree == parse_tree2
+
+    # Now convert to Rust/chumsky as a basis for something more sane than this
+    # abominatation of a Python script.
+    with open("grammarspec/src/bootstrap.rs", "w", encoding="utf-8") as fil:
+        fil.write("""\
+use chumsky::{prelude::*, stream::Stream};
+use crate::types;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TokenType {
+""")
+
+        first = True
+        regexes = []
+        for name in grammar.token_order:
+            if name == "_":
+                continue
+            if first:
+                first = False
+            else:
+                fil.write("\n")
+            doc = grammar.token_rules[name][0]
+            if doc:
+                for line in doc.split("\n"):
+                    fil.write(f"    /// {line}\n")
+            fil.write(f"    {name},\n")
+            regexes.append((
+                name,
+                AstLiteral.escape_rust(grammar.token_regexes[name].pattern)
+            ))
+
+        whitespace_regex = grammar.token_regexes.get("_", None)
+        if whitespace_regex is not None:
+            whitespace_regex = AstLiteral.escape_rust(whitespace_regex.pattern)
+        else:
+            whitespace_regex = ""
+
+
+        fil.write(f"""\
+}}
+
+impl types::TokenType for TokenType {{
+    type All = [TokenType; {len(regexes)}];
+
+    fn all() -> Self::All {{
+        [
+""")
+        for name, _ in regexes:
+            fil.write(f"            Self::{name},\n")
+
+        fil.write("""\
+        ]
+    }
+
+    fn regex(&self) -> &'static str {
+        match self {
+""")
+        for name, regex in regexes:
+            fil.write(f"            Self::{name} => \"{regex}\",\n")
+
+        fil.write(f"""\
+        }}
+    }}
+
+    fn whitespace() -> &'static str {{
+        "{whitespace_regex}"
+    }}
+}}
+
+impl std::fmt::Display for TokenType {{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{
+        write!(f, "{{:?}}", self)
+    }}
+}}
+
+/// Tokenizes a piece of text.
+pub fn tokenize<'s>(text: &'s str) -> types::Tokenizer<'s, TokenType> {{
+    types::Tokenizer::new(text)
+}}
+
+/// Tokenizes a piece of text starting from the given source location.
+pub fn tokenize_from<'s, L: types::Location>(
+    location: L,
+    text: &'s str,
+) -> types::Tokenizer<'s, TokenType, L> {{
+    types::Tokenizer::new_with_location(location, text)
+}}
+
+""")
+
+        name_lookup = [f"parse_{name}" for name in grammar.grammar_rules]
+        for name, (doc, alters) in grammar.grammar_rules.items():
+            variant_names, variant_docs, elements = zip(*alters)
+            chumsky_define(
+                fil,
+                elements,
+                name_lookup,
+                case_convert,
+                f"Pt{name}",
+                doc,
+                variant_names,
+                variant_docs
+            )
+            for element in elements:
+                element.define_chumsky_types(fil, name_lookup, case_convert)
+
+    subprocess.check_call(["rustfmt", "grammarspec/src/bootstrap.rs"])
