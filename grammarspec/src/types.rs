@@ -67,7 +67,7 @@ impl Location for SingleFileLocation {
 
 /// A span of two (related) source locations.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
-pub struct Span<L: Location> {
+pub struct Span<L: Location = SingleFileLocation> {
     a: L,
     b: L,
 }
@@ -239,7 +239,7 @@ impl <T: TokenType> std::fmt::Display for TokenClass<T> {
 /// they have the same type, with no bearing on the text or span. The text or
 /// span are treated as optional annotations.
 #[derive(Clone, Debug, Eq, Hash)]
-pub struct GrammarInput<T: TokenType, L: Location> {
+pub struct GrammarInput<T: TokenType, L: Location = SingleFileLocation> {
     token_type: T,
     text: Option<String>,
     span: Span<L>,
@@ -301,7 +301,7 @@ impl<T: TokenType, L: Location> Spanned for GrammarInput<T, L> {
 
 /// Error type used for a failure to tokenize.
 #[derive(Clone, Debug)]
-pub struct TokenizerError<L: Location> {
+pub struct TokenizerError<L: Location = SingleFileLocation> {
     invalid_char: char,
     location: L,
 }
@@ -447,7 +447,7 @@ impl<'s, T: TokenType, L: Location> Iterator for Tokenizer<'s, T, L> {
 
 // Error type used for both parsing and tokenization.
 #[derive(Clone, Debug)]
-pub enum Error<T: TokenType, L: Location> {
+pub enum Error<T: TokenType, L: Location = SingleFileLocation> {
     TokenizerFailed(TokenizerError<L>),
     ParserExpectedButFound(Vec<Option<GrammarInput<T, L>>>, Option<GrammarInput<T, L>>),
 }
