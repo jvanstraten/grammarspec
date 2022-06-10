@@ -6,7 +6,7 @@ use chumsky::{prelude::*, stream::Stream};
 fn main() {
     let mut error_tokens = vec![];
     for token in bootstrap::tokenize(include_str!("../../self-spec.ebnf")).filter_map(|x| {
-        match x.to_terminal() {
+        match x.to_grammar_input() {
             Ok(x) => Some(x),
             Err(x) => {
                 if let Ok(error) = x.to_error() {

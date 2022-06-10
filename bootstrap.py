@@ -477,22 +477,22 @@ def chumsky_construct(elements, name_lookup, case_convert, type_name, variant_na
             variant = f"{type_name}::{variant_names[index]}"
         else:
             variant = type_name
-        children.append(f"{parser}.map(|{map_in}| {variant}({map_out})")
+        children.append(f"{parser}.map(|{map_in}| {variant}({map_out}))")
     result = [children[0]]
     for index, child in enumerate(children[1:]):
         result.append(f".or({child})")
     return "".join(result)
 
 
-def chumsky_define(fil, elements, name_lookup, case_convert, type_name, type_doc, variant_names, variant_docs):
+def chumsky_define(fil, elements, name_lookup, case_convert, type_name, type_doc, variant_names, variant_docs, index):
     if type_doc:
         for line in type_doc.split("\n"):
             fil.write(f"/// {line}\n")
+    fil.write("#[derive(Clone, Debug, PartialEq, Eq, Hash)]\n")
     if variant_names:
         assert len(elements) == len(variant_names)
         assert len(elements) == len(variant_docs)
-        fil.write("#[derive(Clone, Debug, PartialEq, Eq, Hash)]\n")
-        fil.write(f"pub enum {type_name}<L: types::Location> {{\n")
+        fil.write(f"pub enum {type_name}<L: types::Location + 'static> {{\n")
         first = True
         for element, variant, doc in zip(elements, variant_names, variant_docs):
             typ = element.as_chumsky_type(name_lookup, case_convert)
@@ -512,7 +512,51 @@ def chumsky_define(fil, elements, name_lookup, case_convert, type_name, type_doc
         typ = elements[0].as_chumsky_type(name_lookup, case_convert)
         if not typ.startswith("("):
             typ = f"({typ})"
-        fil.write(f"pub struct {type_name}{typ};\n\n")
+        fil.write(f"pub struct {type_name}<L: types::Location + 'static>{typ};\n\n")
+    fil.write(f"impl<L: types::Location + 'static> {type_name}<L> {{\n")
+    if index is not None:
+        fil.write(f"""\
+    /// Return a Chumsky parser for this rule.
+    pub fn parser() -> BoxedParser<{type_name}<L>, L> {{
+        make_parsers().{index}
+    }}
+
+""")
+    # TODO visit()
+    fil.write("}\n\n")
+
+
+def chumsky_define_token(fil, name, doc):
+    if doc:
+        for line in doc.split("\n"):
+            fil.write(f"/// {line}\n")
+    fil.write(f"""\
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Pt{name}<L: types::Location = types::SingleFileLocation> {{
+    pub text: String,
+    pub span: types::Span<L>,
+}}
+
+impl<L: types::Location> From<types::GrammarInput<TokenType, L>> for Pt{name}<L> {{
+    fn from(input: types::GrammarInput<TokenType, L>) -> Self {{
+        let (token_type, text, span) = input.unwrap();
+        assert!(token_type == TokenType::{name});
+        Self {{
+            text: text.unwrap_or_default(),
+            span
+        }}
+    }}
+}}
+
+""")
+
+
+def rust_tuple(elements):
+    if not elements:
+        return "()"
+    if len(elements) == 1:
+        return f"({elements[0]},)"
+    return f"({', '.join(elements)},)"
 
 
 class AstAlternation:
@@ -580,7 +624,8 @@ class AstAlternation:
                 self.rust_enum_name,
                 None,
                 [f"Option{index+1}" for index in range(len(self.elements))],
-                [None for _ in self.elements]
+                [None for _ in self.elements],
+                None
             )
         for element in self.elements:
             element.define_chumsky_types(fil, name_lookup, case_convert)
@@ -641,10 +686,10 @@ class AstConcatenation:
         return "(" + ", ".join(children) + ")"
 
     def as_chumsky_tuple_length(self):
-        if len(children) == 1:
+        if len(self.elements) == 1:
             return None
         else:
-            return len(children)
+            return len(self.elements)
 
     def define_chumsky_types(self, fil, name_lookup, case_convert):
         for element in self.elements:
@@ -863,10 +908,10 @@ class AstLiteral:
         return ParserFactory().term(case_convert(self.as_symbol()))
 
     def as_chumsky(self, name_lookup, case_convert):
-        return f"just(types::Terminal::new_pattern(TokenType::{case_convert(self.as_symbol())}))"
+        return f"just(types::GrammarInput::new_pattern(TokenType::{case_convert(self.as_symbol())})).map(Pt{case_convert(self.as_symbol())}::from)"
 
     def as_chumsky_type(self, name_lookup, case_convert):
-        return f"types::Terminal<TokenType, L>"
+        return f"Pt{case_convert(self.as_symbol())}"
 
     def as_chumsky_tuple_length(self):
         return None
@@ -919,12 +964,10 @@ class AstReference:
     def as_chumsky(self, name_lookup, case_convert):
         if self.s in name_lookup:
             return name_lookup[self.s]
-        return f"just(types::Terminal::new_pattern(TokenType::{case_convert(self.s)}))"
+        return f"just(types::GrammarInput::new_pattern(TokenType::{self.s})).map(Pt{self.s}::from)"
 
     def as_chumsky_type(self, name_lookup, case_convert):
-        if self.s in name_lookup:
-            return f"Pt{self.s}<L>"
-        return f"types::Terminal<TokenType, L>"
+        return f"Pt{self.s}<L>"
 
     def as_chumsky_tuple_length(self):
         return None
@@ -1116,13 +1159,14 @@ if __name__ == "__main__":
 
     # Parse the self-specification with the grammar we just constructed from
     # it.
-    with open("self-spec.ebnf", "r", encoding="utf-8") as fil:
+    with open("simple.ebnf", "r", encoding="utf-8") as fil:
         tokens2 = list(grammar.tokenize(fil.read()))
     parse_tree2 = grammar.parse(tokens2)
+    grammar = AstGrammar(parse_tree2, case_convert)
 
     # Assert that both result in exactly the same thing.
-    assert tokens == tokens2
-    assert parse_tree == parse_tree2
+    #assert tokens == tokens2
+    #assert parse_tree == parse_tree2
 
     # Now convert to Rust/chumsky as a basis for something more sane than this
     # abominatation of a Python script.
@@ -1211,11 +1255,21 @@ pub fn tokenize_from<'s, L: types::Location>(
     types::Tokenizer::new_with_location(location, text)
 }}
 
+/// Helper type for a Chumsky parser in a box.
+pub type BoxedParser<T, L> = Box<dyn Parser<types::GrammarInput<TokenType, L>, T, Error = Simple<types::GrammarInput<TokenType, L>>>>;
+
 """)
 
-        name_lookup = [f"parse_{name}" for name in grammar.grammar_rules]
-        for name, (doc, alters) in grammar.grammar_rules.items():
+        for name, (doc, _) in grammar.token_rules.items():
+            if name != "_":
+                chumsky_define_token(fil, name, doc)
+
+        name_lookup = {name: f"parse_{name}" for name in grammar.grammar_rules}
+        rule_order = []
+        for index, (name, (doc, alters)) in enumerate(grammar.grammar_rules.items()):
             variant_names, variant_docs, elements = zip(*alters)
+            if len(alters) == 1:
+                variant_names = None
             chumsky_define(
                 fil,
                 elements,
@@ -1224,9 +1278,47 @@ pub fn tokenize_from<'s, L: types::Location>(
                 f"Pt{name}",
                 doc,
                 variant_names,
-                variant_docs
+                variant_docs,
+                index
             )
             for element in elements:
                 element.define_chumsky_types(fil, name_lookup, case_convert)
+            rule_order.append(name)
 
+        decls = []
+        defs = []
+        return_expr = []
+        return_type = []
+        for rule_name in rule_order:
+            var_name = name_lookup[rule_name]
+            alters = grammar.grammar_rules[rule_name][1]
+            variant_names, variant_docs, elements = zip(*alters)
+            if len(alters) == 1:
+                variant_names = None
+            chumsky = chumsky_construct(elements, name_lookup, case_convert, f"Pt{rule_name}", variant_names)
+            decls.append(f"let mut {var_name} = Recursive::declare();")
+            defs.append(f"{var_name}.define({chumsky});")
+            return_expr.append(f"Box::new({var_name})")
+            return_type.append(f"BoxedParser<Pt{rule_name}<L>, L>")
+        decls = "\n    ".join(decls)
+        defs = "\n\n    ".join(defs)
+        return_expr = rust_tuple(return_expr)
+        return_type = rust_tuple(return_type)
+
+        fil.write(f"""\
+/// Constructs Chumsky parsers for all the grammar rules.
+fn make_parsers<L: types::Location + 'static>() -> {return_type} {{
+    {decls}
+
+    {defs}
+
+    {return_expr}
+}}
+""")
     subprocess.check_call(["rustfmt", "grammarspec/src/bootstrap.rs"])
+
+    #let mut parse_Grammar = Recursive::declare();
+
+    #parse_Grammar.define(just(types::GrammarInput::new_pattern(TokenType::MinGt)).map(|_| PtGrammar(vec![])));
+
+    #(Box::new(parse_Grammar), )

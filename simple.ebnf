@@ -1,0 +1,4 @@
+grammar ::= sum ;
+sum ::= val "+" val ;
+val :== [0-9]+ ;
+_ :== [ \t\r\n]+ ;

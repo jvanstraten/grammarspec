@@ -234,24 +234,24 @@ impl <T: TokenType> std::fmt::Display for TokenClass<T> {
 
 //=============================================================================
 
-/// Token type used as terminals in the grammar. This type is a bit derpy to
-/// make Chumsky work right: two terminal tokens are equal iff they have the
-/// same type, with no bearing on the text or span. The text or span are
-/// treated as optional annotations.
+/// Token type used as terminals at the input of the grammar. This type is a
+/// bit derpy to make Chumsky work right: two terminal tokens are equal iff
+/// they have the same type, with no bearing on the text or span. The text or
+/// span are treated as optional annotations.
 #[derive(Clone, Debug, Eq, Hash)]
-pub struct Terminal<T: TokenType, L: Location = SingleFileLocation> {
+pub struct GrammarInput<T: TokenType, L: Location> {
     token_type: T,
     text: Option<String>,
     span: Span<L>,
 }
 
-impl<T: TokenType, L: Location> PartialEq for Terminal<T, L> {
+impl<T: TokenType, L: Location> PartialEq for GrammarInput<T, L> {
     fn eq(&self, other: &Self) -> bool {
         self.token_type == other.token_type
     }
 }
 
-impl<T: TokenType, L: Location> Terminal<T, L> {
+impl<T: TokenType, L: Location> GrammarInput<T, L> {
     /// Creates a new terminal node.
     pub fn new<S: ToString>(token_type: T, text: S, span: Span<L>) -> Self {
         Self { token_type, text: Some(text.to_string()), span }
@@ -272,9 +272,14 @@ impl<T: TokenType, L: Location> Terminal<T, L> {
     pub fn text(&self) -> &str {
         self.text.as_ref().map(|x| &x[..]).unwrap_or("")
     }
+
+    /// Unwraps the contents into a tuple.
+    pub fn unwrap(self) -> (T, Option<String>, Span<L>) {
+        (self.token_type, self.text, self.span)
+    }
 }
 
-impl<T: TokenType, L: Location> std::fmt::Display for Terminal<T, L> {
+impl<T: TokenType, L: Location> std::fmt::Display for GrammarInput<T, L> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         if let Some(text) = &self.text {
             write!(f, "{} ({:?}) at {}", self.token_type, text, self.span)
@@ -284,7 +289,7 @@ impl<T: TokenType, L: Location> std::fmt::Display for Terminal<T, L> {
     }
 }
 
-impl<T: TokenType, L: Location> Spanned for Terminal<T, L> {
+impl<T: TokenType, L: Location> Spanned for GrammarInput<T, L> {
     type Location = L;
 
     fn span(&self) -> &Span<Self::Location> {
@@ -329,11 +334,11 @@ impl <'a, T: TokenType, L: Location> Token<'a, T, L> {
         Self { class, text, span }
     }
 
-    /// Converts self to a [Terminal] if it is a normal token. Otherwise
+    /// Converts self to a [GrammarInput] if it is a normal token. Otherwise
     /// returns Err(self).
-    pub fn to_terminal(self) -> Result<Terminal<T, L>, Self> {
+    pub fn to_grammar_input(self) -> Result<GrammarInput<T, L>, Self> {
         if let Some(token_type) = self.class.token_type() {
-            Ok(Terminal::new(token_type, self.text, self.span))
+            Ok(GrammarInput::new(token_type, self.text, self.span))
         } else {
             Err(self)
         }
@@ -444,17 +449,17 @@ impl<'s, T: TokenType, L: Location> Iterator for Tokenizer<'s, T, L> {
 #[derive(Clone, Debug)]
 pub enum Error<T: TokenType, L: Location> {
     TokenizerFailed(TokenizerError<L>),
-    ParserExpectedButFound(Vec<Option<Terminal<T, L>>>, Option<Terminal<T, L>>),
+    ParserExpectedButFound(Vec<Option<GrammarInput<T, L>>>, Option<GrammarInput<T, L>>),
 }
 
-impl<T: TokenType, L: Location> chumsky::Error<Terminal<T, L>> for Error<T, L> {
+impl<T: TokenType, L: Location> chumsky::Error<GrammarInput<T, L>> for Error<T, L> {
     type Span = std::ops::Range<usize>;
     type Label = ();
 
-    fn expected_input_found<Iter: IntoIterator<Item = Option<Terminal<T, L>>>>(
+    fn expected_input_found<Iter: IntoIterator<Item = Option<GrammarInput<T, L>>>>(
         _span: std::ops::Range<usize>,
         expected: Iter,
-        found: Option<Terminal<T, L>>,
+        found: Option<GrammarInput<T, L>>,
     ) -> Self {
         Self::ParserExpectedButFound(expected.into_iter().collect(), found)
     }
@@ -477,7 +482,7 @@ impl<T: TokenType, L: Location> std::fmt::Display for Error<T, L> {
         match self {
             Error::TokenizerFailed(x) => std::fmt::Display::fmt(x, f),
             Error::ParserExpectedButFound(expected, found) => {
-                let formatter = |x: &Option<Terminal<T, L>>| {
+                let formatter = |x: &Option<GrammarInput<T, L>>| {
                     x.as_ref().map(|x| x.to_string()).unwrap_or_else(|| String::from("end of file"))
                 };
                 write!(f, "expected ")?;
