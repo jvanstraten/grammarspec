@@ -234,93 +234,8 @@ impl <T: TokenType> std::fmt::Display for TokenClass<T> {
 
 //=============================================================================
 
-/// Token type used as terminals at the input of the grammar. This type is a
-/// bit derpy to make Chumsky work right: two terminal tokens are equal iff
-/// they have the same type, with no bearing on the text or span. The text or
-/// span are treated as optional annotations.
-#[derive(Clone, Debug, Eq, Hash)]
-pub struct GrammarInput<T: TokenType, L: Location = SingleFileLocation> {
-    token_type: T,
-    text: Option<String>,
-    span: Span<L>,
-}
-
-impl<T: TokenType, L: Location> PartialEq for GrammarInput<T, L> {
-    fn eq(&self, other: &Self) -> bool {
-        self.token_type == other.token_type
-    }
-}
-
-impl<T: TokenType, L: Location> GrammarInput<T, L> {
-    /// Creates a new terminal node.
-    pub fn new<S: ToString>(token_type: T, text: S, span: Span<L>) -> Self {
-        Self { token_type, text: Some(text.to_string()), span }
-    }
-
-    /// Creates a new "pattern" node, only used for error messages and to
-    /// compare against.
-    pub fn new_pattern(token_type: T) -> Self {
-        Self { token_type, text: None, span: Span::default() }
-    }
-
-    /// Returns the token type.
-    pub fn token_type(&self) -> T {
-        self.token_type
-    }
-
-    /// Returns the text enclosed by the token.
-    pub fn text(&self) -> &str {
-        self.text.as_ref().map(|x| &x[..]).unwrap_or("")
-    }
-
-    /// Unwraps the contents into a tuple.
-    pub fn unwrap(self) -> (T, Option<String>, Span<L>) {
-        (self.token_type, self.text, self.span)
-    }
-}
-
-impl<T: TokenType, L: Location> std::fmt::Display for GrammarInput<T, L> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if let Some(text) = &self.text {
-            write!(f, "{} ({:?}) at {}", self.token_type, text, self.span)
-        } else {
-            write!(f, "{}", self.token_type)
-        }
-    }
-}
-
-impl<T: TokenType, L: Location> Spanned for GrammarInput<T, L> {
-    type Location = L;
-
-    fn span(&self) -> &Span<Self::Location> {
-        &self.span
-    }
-}
-
-//=============================================================================
-
-/// Error type used for a failure to tokenize.
-#[derive(Clone, Debug)]
-pub struct TokenizerError<L: Location = SingleFileLocation> {
-    invalid_char: char,
-    location: L,
-}
-
-impl<L: Location> std::fmt::Display for TokenizerError<L> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "failed to match character {:?} as the start of a token at {}", self.invalid_char, self.location)
-    }
-}
-
-impl<L: Location> TokenizerError<L> {
-    pub fn new(invalid_char: char, location: L) -> Self {
-        Self { invalid_char, location }
-    }
-}
-
-//=============================================================================
-
-/// Tokens as emitted by the tokenizer.
+/// Tokens as emitted by the tokenizer. This includes errors and whitespace
+/// in addition to regular terminals in the grammar.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Token<'a, T: TokenType, L: Location = SingleFileLocation> {
     class: TokenClass<T>,
@@ -334,11 +249,11 @@ impl <'a, T: TokenType, L: Location> Token<'a, T, L> {
         Self { class, text, span }
     }
 
-    /// Converts self to a [GrammarInput] if it is a normal token. Otherwise
+    /// Converts self to a [NormalToken] if it is a normal token. Otherwise
     /// returns Err(self).
-    pub fn to_grammar_input(self) -> Result<GrammarInput<T, L>, Self> {
+    pub fn to_grammar_input(self) -> Result<TerminalToken<T, L>, Self> {
         if let Some(token_type) = self.class.token_type() {
-            Ok(GrammarInput::new(token_type, self.text, self.span))
+            Ok(TerminalToken::new(token_type, self.text, self.span))
         } else {
             Err(self)
         }
@@ -376,6 +291,27 @@ impl<'a, T: TokenType, L: Location> Spanned for Token<'a, T, L> {
 
     fn span(&self) -> &Span<Self::Location> {
         &self.span
+    }
+}
+
+//=============================================================================
+
+/// Error type used for a failure to tokenize.
+#[derive(Clone, Debug)]
+pub struct TokenizerError<L: Location = SingleFileLocation> {
+    invalid_char: char,
+    location: L,
+}
+
+impl<L: Location> std::fmt::Display for TokenizerError<L> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "failed to match character {:?} as the start of a token at {}", self.invalid_char, self.location)
+    }
+}
+
+impl<L: Location> TokenizerError<L> {
+    pub fn new(invalid_char: char, location: L) -> Self {
+        Self { invalid_char, location }
     }
 }
 
@@ -445,21 +381,120 @@ impl<'s, T: TokenType, L: Location> Iterator for Tokenizer<'s, T, L> {
 
 //=============================================================================
 
+/// Token type used as terminals at the input of the grammar. This type is a
+/// bit derpy to make Chumsky work right: two terminal tokens are equal iff
+/// they have the same type, with no bearing on the text or span. The text or
+/// span are treated as optional annotations, used only to aid in the
+/// construction of error messages.
+#[derive(Clone, Debug, Eq, Hash)]
+pub struct TerminalToken<T: TokenType, L: Location = SingleFileLocation> {
+    token_type: T,
+    text: Option<String>,
+    span: Span<L>,
+}
+
+impl<T: TokenType, L: Location> PartialEq for TerminalToken<T, L> {
+    fn eq(&self, other: &Self) -> bool {
+        self.token_type == other.token_type
+    }
+}
+
+impl<T: TokenType, L: Location> TerminalToken<T, L> {
+    /// Creates a new terminal node.
+    pub fn new<S: ToString>(token_type: T, text: S, span: Span<L>) -> Self {
+        Self { token_type, text: Some(text.to_string()), span }
+    }
+
+    /// Creates a new "pattern" node, only used for error messages and to
+    /// compare against.
+    pub fn new_pattern(token_type: T) -> Self {
+        Self { token_type, text: None, span: Span::default() }
+    }
+
+    /// Returns the token type.
+    pub fn token_type(&self) -> T {
+        self.token_type
+    }
+
+    /// Returns the text enclosed by the token.
+    pub fn text(&self) -> &str {
+        self.text.as_ref().map(|x| &x[..]).unwrap_or("")
+    }
+
+    /// Returns the span enclosed by the token.
+    pub fn span(&self) -> &Span<L> {
+        &self.span
+    }
+
+    /// Unwraps the contents into a tuple.
+    pub fn unwrap(self) -> (T, Option<String>, Span<L>) {
+        (self.token_type, self.text, self.span)
+    }
+}
+
+impl<T: TokenType, L: Location> std::fmt::Display for TerminalToken<T, L> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if let Some(text) = &self.text {
+            write!(f, "{} ({:?}) at {}", self.token_type, text, self.span)
+        } else {
+            write!(f, "{}", self.token_type)
+        }
+    }
+}
+
+impl<T: TokenType, L: Location> Spanned for TerminalToken<T, L> {
+    type Location = L;
+
+    fn span(&self) -> &Span<Self::Location> {
+        &self.span
+    }
+}
+
+//=============================================================================
+
+/// The information contained in the generated terminal node structs for the
+/// parse tree. This will be wrapped in an Option; this option will only be
+/// None when the node is generated using default() within the context of error
+/// recovery.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TerminalTokenData<L: Location = SingleFileLocation> {
+    /// The text matched by the tokenizer.
+    pub text: String,
+
+    /// The index of the token in the output of the tokenizer, after filtering
+    /// down to terminal tokens.
+    pub index: usize,
+
+    /// The span of text matched by the tokenizer.
+    pub span: Span<L>,
+}
+
+impl<L: Location> TerminalTokenData<L> {
+    pub fn annotate_from_token_list<T: TokenType>(&mut self, tokens: &[TerminalToken<T, L>]) {
+        if let Some(token) = tokens.get(self.index) {
+            self.text = token.text().to_string();
+            self.span = token.span().clone();
+        }
+    }
+}
+
+//=============================================================================
+
 // Error type used for both parsing and tokenization.
 #[derive(Clone, Debug)]
 pub enum Error<T: TokenType, L: Location = SingleFileLocation> {
     TokenizerFailed(TokenizerError<L>),
-    ParserExpectedButFound(Vec<Option<GrammarInput<T, L>>>, Option<GrammarInput<T, L>>),
+    ParserExpectedButFound(Vec<Option<TerminalToken<T, L>>>, Option<TerminalToken<T, L>>),
 }
 
-impl<T: TokenType, L: Location> chumsky::Error<GrammarInput<T, L>> for Error<T, L> {
+impl<T: TokenType, L: Location> chumsky::Error<TerminalToken<T, L>> for Error<T, L> {
     type Span = std::ops::Range<usize>;
     type Label = ();
 
-    fn expected_input_found<Iter: IntoIterator<Item = Option<GrammarInput<T, L>>>>(
+    fn expected_input_found<Iter: IntoIterator<Item = Option<TerminalToken<T, L>>>>(
         _span: std::ops::Range<usize>,
         expected: Iter,
-        found: Option<GrammarInput<T, L>>,
+        found: Option<TerminalToken<T, L>>,
     ) -> Self {
         Self::ParserExpectedButFound(expected.into_iter().collect(), found)
     }
@@ -482,7 +517,7 @@ impl<T: TokenType, L: Location> std::fmt::Display for Error<T, L> {
         match self {
             Error::TokenizerFailed(x) => std::fmt::Display::fmt(x, f),
             Error::ParserExpectedButFound(expected, found) => {
-                let formatter = |x: &Option<GrammarInput<T, L>>| {
+                let formatter = |x: &Option<TerminalToken<T, L>>| {
                     x.as_ref().map(|x| x.to_string()).unwrap_or_else(|| String::from("end of file"))
                 };
                 write!(f, "expected ")?;

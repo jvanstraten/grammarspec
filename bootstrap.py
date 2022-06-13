@@ -464,12 +464,9 @@ def chumsky_construct(elements, name_lookup, case_convert, type_name, variant_na
     for index, element in enumerate(elements):
         parser = element.as_chumsky(name_lookup, case_convert)
         tup_len = element.as_chumsky_tuple_length()
-        if tup_len is None:
+        if tup_len == 1:
             map_out = "x"
             map_in = map_out
-        elif tup_len == 1:
-            map_out = "x"
-            map_in = f"({map_out},)"
         else:
             map_out = ", ".join(map(lambda x: f"x{x+1}", range(tup_len)))
             map_in = f"({map_out})"
@@ -481,38 +478,66 @@ def chumsky_construct(elements, name_lookup, case_convert, type_name, variant_na
     result = [children[0]]
     for index, child in enumerate(children[1:]):
         result.append(f".or({child})")
+    result.append(".boxed()")
     return "".join(result)
 
 
-def chumsky_define(fil, elements, name_lookup, case_convert, type_name, type_doc, variant_names, variant_docs, index):
+def chumsky_define(fil, elements, name_lookup, case_convert, type_name, type_doc, variant_names, variant_docs, index, visit_name):
     if type_doc:
         for line in type_doc.split("\n"):
             fil.write(f"/// {line}\n")
-    fil.write("#[derive(Clone, Debug, PartialEq, Eq, Hash)]\n")
+    traverse = []
+    traverse_mut = []
     if variant_names:
         assert len(elements) == len(variant_names)
         assert len(elements) == len(variant_docs)
-        fil.write(f"pub enum {type_name}<L: types::Location + 'static> {{\n")
-        first = True
+        fil.write("#[derive(Clone, Debug, PartialEq, Eq, Hash)]\n")
+        fil.write(f"pub enum {type_name}<L: types::Location + 'static = types::SingleFileLocation> {{\n")
+        fil.write("    /// Used to recover from errors.\n")
+        fil.write("    Error,\n")
+        traverse.append("match self {")
+        traverse_mut.append("match self {")
+        traverse.append(f"    {type_name}::Error => (),")
+        traverse_mut.append(f"    {type_name}::Error => (),")
         for element, variant, doc in zip(elements, variant_names, variant_docs):
             typ = element.as_chumsky_type(name_lookup, case_convert)
             if not typ.startswith("("):
                 typ = f"({typ})"
-            if first:
-                first = False
-            else:
-                fil.write("\n")
+            fil.write("\n")
             if doc:
                 for line in doc.split("\n"):
                     fil.write(f"    /// {line}\n")
             fil.write(f"    {variant}{typ},\n")
+            var_names = [f'x{x+1}' for x in range(element.as_chumsky_tuple_length())]
+            match = f"    {type_name}::{variant}({', '.join(var_names)}) => {{"
+            traverse.append(match)
+            traverse_mut.append(match)
+            traverse.extend((f"        {x}" for x in element.generate_traverse(name_lookup, case_convert, var_names, False)))
+            traverse_mut.extend((f"        {x}" for x in element.generate_traverse(name_lookup, case_convert, var_names, True)))
+            traverse.append("    }")
+            traverse_mut.append("    }")
         fil.write("}\n\n")
+        fil.write(f"impl<L: types::Location + 'static> Default for {type_name}<L> {{\n")
+        fil.write("    fn default() -> Self {\n")
+        fil.write(f"        {type_name}::Error\n")
+        fil.write("    }\n")
+        fil.write("}\n\n")
+        traverse.append("}")
+        traverse_mut.append("}")
     else:
         assert len(elements) == 1
         typ = elements[0].as_chumsky_type(name_lookup, case_convert)
         if not typ.startswith("("):
             typ = f"({typ})"
+        fil.write("#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]\n")
         fil.write(f"pub struct {type_name}<L: types::Location + 'static>{typ};\n\n")
+        tup_len = elements[0].as_chumsky_tuple_length()
+        var_names = [f'x{x+1}' for x in range(tup_len)]
+        for var_index, var_name in enumerate(var_names):
+            traverse.append(f"let {var_name} = &self.{var_index};")
+            traverse_mut.append(f"let {var_name} = &mut self.{var_index};")
+        traverse.extend(elements[0].generate_traverse(name_lookup, case_convert, var_names, False))
+        traverse_mut.extend(elements[0].generate_traverse(name_lookup, case_convert, var_names, True))
     fil.write(f"impl<L: types::Location + 'static> {type_name}<L> {{\n")
     if index is not None:
         fil.write(f"""\
@@ -522,8 +547,36 @@ def chumsky_define(fil, elements, name_lookup, case_convert, type_name, type_doc
     }}
 
 """)
-    # TODO visit()
-    fil.write("}\n\n")
+    if visit_name:
+        fil.write(f"""\
+    /// Visit this nonterminal node with the given visitor.
+    pub fn visit<E, V: Visitor<L, E>>(&self, visitor: &mut V) -> Result<(), E> {{
+        visitor.visit_{visit_name}(self)
+    }}
+
+    /// Visit this nonterminal node with the given visitor.
+    pub fn visit_mut<E, V: VisitorMut<L, E>>(&mut self, visitor: &mut V) -> Result<(), E> {{
+        visitor.visit_{visit_name}(self)
+    }}
+
+""")
+
+    traverse = "\n        ".join(traverse)
+    traverse_mut = "\n        ".join(traverse_mut)
+
+    fil.write(f"""\
+    /// Visit the children of this nonterminal node with the given visitor.
+    pub fn traverse<E, V: Visitor<L, E>>(&self, visitor: &mut V) -> Result<(), E> {{
+        {traverse}
+        Ok(())
+    }}
+
+    /// Visit the children of this nonterminal node with the given visitor.
+    pub fn traverse_mut<E, V: VisitorMut<L, E>>(&mut self, visitor: &mut V) -> Result<(), E> {{
+        {traverse_mut}
+        Ok(())
+    }}
+}}\n\n""")
 
 
 def chumsky_define_token(fil, name, doc):
@@ -531,20 +584,32 @@ def chumsky_define_token(fil, name, doc):
         for line in doc.split("\n"):
             fil.write(f"/// {line}\n")
     fil.write(f"""\
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Pt{name}<L: types::Location = types::SingleFileLocation> {{
-    pub text: String,
-    pub span: types::Span<L>,
+    pub data: Option<types::TerminalTokenData<L>>,
 }}
 
-impl<L: types::Location> From<types::GrammarInput<TokenType, L>> for Pt{name}<L> {{
-    fn from(input: types::GrammarInput<TokenType, L>) -> Self {{
-        let (token_type, text, span) = input.unwrap();
+impl<L: types::Location> Pt{name}<L> {{
+    fn new(token: types::TerminalToken<TokenType, L>, token_span: std::ops::Range<usize>) -> Self {{
+        let (token_type, text, span) = token.unwrap();
         assert!(token_type == TokenType::{name});
         Self {{
-            text: text.unwrap_or_default(),
-            span
+            data: Some(types::TerminalTokenData {{
+                index: token_span.start(),
+                text: text.unwrap_or_default(),
+                span,
+            }}),
         }}
+    }}
+
+    /// Visit this terminal node with the given visitor.
+    pub fn visit<E, V: Visitor<L, E>>(&self, visitor: &mut V) -> Result<(), E> {{
+        visitor.visit_{name}(self)
+    }}
+
+    /// Visit this terminal node with the given visitor.
+    pub fn visit_mut<E, V: VisitorMut<L, E>>(&mut self, visitor: &mut V) -> Result<(), E> {{
+        visitor.visit_{name}(self)
     }}
 }}
 
@@ -604,6 +669,10 @@ class AstAlternation:
                 self.rust_enum_name,
                 [f"Option{index+1}" for index in range(len(self.elements))]
             )
+
+            # TODO: if all patterns end with the same terminal, recover with
+            #   .recover_with(skip_until([types::TerminalToken::new_pattern(TokenType::Sem)], |_| Default::default()).consume_end())
+
         return self.elements[0].as_chumsky(name_lookup, case_convert)
 
     def as_chumsky_type(self, name_lookup, case_convert):
@@ -612,7 +681,7 @@ class AstAlternation:
         return self.elements[0].as_chumsky_type(name_lookup, case_convert)
 
     def as_chumsky_tuple_length(self):
-        return None
+        return 1
 
     def define_chumsky_types(self, fil, name_lookup, case_convert):
         if len(self.elements) > 1:
@@ -625,10 +694,15 @@ class AstAlternation:
                 None,
                 [f"Option{index+1}" for index in range(len(self.elements))],
                 [None for _ in self.elements],
+                None,
                 None
             )
         for element in self.elements:
             element.define_chumsky_types(fil, name_lookup, case_convert)
+
+    def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
+        assert len(var_names) == 1
+        yield f"{var_names[0]}.traverse(visitor)"
 
     def __eq__(self, other):
         return type(self) == type(other) and self.elements == other.elements
@@ -678,7 +752,11 @@ class AstConcatenation:
                 result.append(f".then({child})")
                 in_pattern = f"({in_pattern}, x{index+2})"
                 out_pattern = f"{out_pattern}, x{index+2}"
-            result.append(f".map(|{in_pattern}| ({out_pattern}))")
+            result.append(f".map(|{in_pattern}| ({out_pattern})).boxed()")
+
+            # TODO: if parenthesis-like:
+            #   .recover_with(nested_delimiters(types::TerminalToken::new_pattern(TokenType::Lp), types::TerminalToken::new_pattern(TokenType::Rp), [], |_| Default::default()))
+
         return "".join(result)
 
     def as_chumsky_type(self, name_lookup, case_convert):
@@ -686,14 +764,16 @@ class AstConcatenation:
         return "(" + ", ".join(children) + ")"
 
     def as_chumsky_tuple_length(self):
-        if len(self.elements) == 1:
-            return None
-        else:
-            return len(self.elements)
+        return len(self.elements)
 
     def define_chumsky_types(self, fil, name_lookup, case_convert):
         for element in self.elements:
             element.define_chumsky_types(fil, name_lookup, case_convert)
+
+    def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
+        assert len(var_names) == len(self.elements)
+        for element, var_name in zip(self.elements, var_names):
+            yield from element.generate_traverse(name_lookup, case_convert, [var_name], mutable)
 
     def __eq__(self, other):
         return type(self) == type(other) and self.elements == other.elements
@@ -764,11 +844,11 @@ class AstRepetition:
     def as_chumsky(self, name_lookup, case_convert):
         child = self.child.as_chumsky(name_lookup, case_convert)
         if self.mode == "?":
-            return f"{child}.or_not()"
+            return f"{child}.or_not().boxed()"
         elif self.mode == "*":
-            return f"{child}.repeated()"
+            return f"{child}.repeated().boxed()"
         elif self.mode == "+":
-            return f"{child}.repeated().at_least(1)"
+            return f"{child}.repeated().at_least(1).boxed()"
         assert False
 
     def as_chumsky_type(self, name_lookup, case_convert):
@@ -780,10 +860,35 @@ class AstRepetition:
         assert False
 
     def as_chumsky_tuple_length(self):
-        return None
+        return 1
 
     def define_chumsky_types(self, fil, name_lookup, case_convert):
         self.child.define_chumsky_types(fil, name_lookup, case_convert)
+
+    def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
+        assert len(var_names) == 1
+        tup_len = self.child.as_chumsky_tuple_length()
+        if tup_len == 1:
+            tup = "x"
+            child_var_names = ["x"]
+        else:
+            child_var_names = [f"x{i+1}" for i in range(tup_len)]
+            tup = f"({', '.join(child_var_names)})"
+        if self.mode == "?":
+            if mutable:
+                yield f"if let Some({tup}) = {var_names[0]}.as_mut() {{"
+            else:
+                yield f"if let Some({tup}) = {var_names[0]}.as_ref() {{"
+        elif self.mode in "*+":
+            if mutable:
+                yield f"for {tup} in {var_names[0]}.iter_mut() {{"
+            else:
+                yield f"for {tup} in {var_names[0]}.iter() {{"
+        else:
+            assert False
+        for line in self.child.generate_traverse(name_lookup, case_convert, child_var_names, mutable):
+            yield f"    {line}"
+        yield "}"
 
     def __eq__(self, other):
         return type(self) == type(other) and self.child == other.child and self.mode == other.mode
@@ -908,16 +1013,20 @@ class AstLiteral:
         return ParserFactory().term(case_convert(self.as_symbol()))
 
     def as_chumsky(self, name_lookup, case_convert):
-        return f"just(types::GrammarInput::new_pattern(TokenType::{case_convert(self.as_symbol())})).map(Pt{case_convert(self.as_symbol())}::from)"
+        return f"just(types::TerminalToken::new_pattern(TokenType::{case_convert(self.as_symbol())})).map_with_span(Pt{case_convert(self.as_symbol())}::new).boxed()"
 
     def as_chumsky_type(self, name_lookup, case_convert):
         return f"Pt{case_convert(self.as_symbol())}<L>"
 
     def as_chumsky_tuple_length(self):
-        return None
+        return 1
 
     def define_chumsky_types(self, fil, name_lookup, case_convert):
         pass
+
+    def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
+        assert len(var_names) == 1
+        yield f"visitor.visit_{case_convert(self.as_symbol())}({var_names[0]})?;"
 
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
@@ -964,7 +1073,7 @@ class AstReference:
     def as_chumsky(self, name_lookup, case_convert):
         if self.s in name_lookup:
             return f"{name_lookup[self.s]}.clone().map(Box::new)"
-        return f"just(types::GrammarInput::new_pattern(TokenType::{self.s})).map(Pt{self.s}::from)"
+        return f"just(types::TerminalToken::new_pattern(TokenType::{self.s})).map_with_span(Pt{self.s}::new).boxed()"
 
     def as_chumsky_type(self, name_lookup, case_convert):
         if self.s in name_lookup:
@@ -972,10 +1081,19 @@ class AstReference:
         return f"Pt{self.s}<L>"
 
     def as_chumsky_tuple_length(self):
-        return None
+        return 1
 
     def define_chumsky_types(self, fil, name_lookup, case_convert):
         pass
+
+    def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
+        assert len(var_names) == 1
+        if self.s not in name_lookup:
+            yield f"visitor.visit_{self.s}({var_names[0]})?;"
+        elif mutable:
+            yield f"visitor.visit_{self.s}({var_names[0]}.as_mut())?;"
+        else:
+            yield f"visitor.visit_{self.s}({var_names[0]}.as_ref())?;"
 
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
@@ -1048,10 +1166,13 @@ class AstCharacterSet:
         raise ValueError("character sets are only allowed within the context of token rules")
 
     def as_chumsky_tuple_length(self):
-        return None
+        return 1
 
     def define_chumsky_types(self, fil, name_lookup, case_convert):
         pass
+
+    def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
+        raise ValueError("character sets are only allowed within the context of token rules")
 
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
@@ -1260,9 +1381,9 @@ pub fn tokenize_from<'s, L: types::Location>(
 /// Helper type for a Chumsky parser in a box.
 pub type BoxedParser<'a, T, L> = chumsky::BoxedParser<
     'a,
-    types::GrammarInput<TokenType, L>,
+    types::TerminalToken<TokenType, L>,
     T,
-    Simple<types::GrammarInput<TokenType, L>>
+    Simple<types::TerminalToken<TokenType, L>>
 >;
 
 """)
@@ -1286,7 +1407,8 @@ pub type BoxedParser<'a, T, L> = chumsky::BoxedParser<
                 doc,
                 variant_names,
                 variant_docs,
-                index
+                index,
+                name
             )
             for element in elements:
                 element.define_chumsky_types(fil, name_lookup, case_convert)
@@ -1305,7 +1427,7 @@ pub type BoxedParser<'a, T, L> = chumsky::BoxedParser<
             chumsky = chumsky_construct(elements, name_lookup, case_convert, f"Pt{rule_name}", variant_names)
             decls.append(f"let mut {var_name} = Recursive::declare();")
             defs.append(f"{var_name}.define({chumsky});")
-            return_expr.append(f"{var_name}.boxed()")
+            return_expr.append(f"{var_name}.then_ignore(end()).boxed()")
             return_type.append(f"BoxedParser<'a, Pt{rule_name}<L>, L>")
         decls = "\n    ".join(decls)
         defs = "\n\n    ".join(defs)
@@ -1314,6 +1436,7 @@ pub type BoxedParser<'a, T, L> = chumsky::BoxedParser<
 
         fil.write(f"""\
 /// Constructs Chumsky parsers for all the grammar rules.
+#[allow(non_snake_case)]
 fn make_parsers<'a, L: types::Location + 'static>() -> {return_type} {{
     {decls}
 
@@ -1322,10 +1445,114 @@ fn make_parsers<'a, L: types::Location + 'static>() -> {return_type} {{
     {return_expr}
 }}
 """)
+
+        visit = []
+        for name in grammar.token_rules:
+            if name != "_":
+                visit.append((name, True))
+        for name in rule_order:
+            visit.append((name, False))
+
+        fil.write(f"""\
+
+/// Visitor trait for immutably walking the parse tree.
+pub trait Visitor<L = types::SingleFileLocation, E = ()>
+where
+    L: types::Location,
+    Self: Sized,
+{{
+""")
+
+        first = True
+        for name, terminal in visit:
+            if first:
+                first = False
+            else:
+                fil.write("\n")
+            fil.write("    #[allow(non_snake_case)]\n")
+            fil.write(f"    fn visit_{name}(&mut self, {'_' if terminal else ''}x: &Pt{name}<L>) -> Result<(), E> {{\n")
+            if not terminal:
+                fil.write("        x.traverse(self)\n")
+            else:
+                fil.write("        Ok(())\n")
+            fil.write("    }\n")
+
+        fil.write(f"""\
+}}
+
+/// Visitor trait for mutably walking the parse tree.
+pub trait VisitorMut<L = types::SingleFileLocation, E = ()>
+where
+    L: types::Location,
+    Self: Sized,
+{{
+""")
+
+        first = True
+        for name, terminal in visit:
+            if first:
+                first = False
+            else:
+                fil.write("\n")
+            fil.write("    #[allow(non_snake_case)]\n")
+            fil.write(f"    fn visit_{name}(&mut self, {'_' if terminal else ''}x: &mut Pt{name}<L>) -> Result<(), E> {{\n")
+            if not terminal:
+                fil.write("        x.traverse_mut(self)\n")
+            else:
+                fil.write("        Ok(())\n")
+            fil.write("    }\n")
+
+        fil.write("""\
+}
+
+/// Internal type used to propagate the text and span information from the
+/// token list into the parse tree. This is necessary because Chumsky's
+/// [just()] parser and friends place a clone of the token pattern into the
+/// parse tree, rather than cloning the incoming token. [filter()] could work,
+/// but can't derive which tokens were expected when constructing the error
+/// message (for obvious reasons). [chumsky::custom()] and otherwise
+/// implementing [chumsky::Parser] manually is also not possible, because
+/// the necessary members of [chumsky::Stream] are private to the crate
+/// (d'oh). So, here we are.
+pub struct Annotator<'a, L: types::Location = types::SingleFileLocation> {
+    tokens: &'a [types::TerminalToken<TokenType, L>]
+}
+
+impl<'a, L: types::Location> Annotator<'a, L> {
+    pub fn new(tokens: &'a [types::TerminalToken<TokenType, L>]) -> Self {
+        Self { tokens }
+    }
+}
+
+impl<'a, L: types::Location> VisitorMut<L> for Annotator<'a, L> {
+""")
+
+        first = True
+        for name in grammar.token_rules:
+            if name == "_":
+                continue
+            if first:
+                first = False
+            else:
+                fil.write("\n")
+            fil.write(f"""\
+    fn visit_{name}(&mut self, x: &mut Pt{name}<L>) -> Result<(), ()> {{
+        if let Some(data) = x.data.as_mut() {{
+            data.annotate_from_token_list(self.tokens);
+        }}
+        Ok(())
+    }}
+""")
+        fil.write("""\
+}
+
+""")
+
+
     subprocess.check_call(["rustfmt", "grammarspec/src/bootstrap.rs"])
 
     #let mut parse_Grammar = Recursive::declare();
 
-    #parse_Grammar.define(just(types::GrammarInput::new_pattern(TokenType::MinGt)).map(|_| PtGrammar(vec![])));
+    #parse_Grammar.define(just(types::TerminalToken::new_pattern(TokenType::MinGt)).map(|_| PtGrammar(vec![])));
 
     #(Box::new(parse_Grammar), )
