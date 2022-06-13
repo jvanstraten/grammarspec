@@ -17,9 +17,6 @@ fn main() {
         }
     }).collect();
     let (mut parse_tree, parser_errors) = bootstrap::PtGrammar::parser().parse_recovery(&tokens[..]);
-    if let Some(pt) = parse_tree.as_mut() {
-        pt.visit_mut(&mut bootstrap::Annotator::new(&tokens[..])).unwrap();
-    }
 
     println!("{:#?}", parse_tree);
 

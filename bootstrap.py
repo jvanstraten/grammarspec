@@ -478,7 +478,14 @@ def chumsky_construct(elements, name_lookup, case_convert, type_name, variant_na
     result = [children[0]]
     for index, child in enumerate(children[1:]):
         result.append(f".or({child})")
-    result.append(".boxed()")
+    last = elements[0].last_terminal(name_lookup, case_convert)
+    for element in elements[1:]:
+        last2 = element.last_terminal(name_lookup, case_convert)
+        if last != last2:
+            last = None
+    if last is not None:
+        result.append(f".recover_with(skip_until([types::TerminalToken::new_pattern(TokenType::{last})], |_| Default::default()).consume_end())")
+    result.append(f".labelled(\"{type_name[2:]}\").boxed()")
     return "".join(result)
 
 
@@ -670,9 +677,6 @@ class AstAlternation:
                 [f"Option{index+1}" for index in range(len(self.elements))]
             )
 
-            # TODO: if all patterns end with the same terminal, recover with
-            #   .recover_with(skip_until([types::TerminalToken::new_pattern(TokenType::Sem)], |_| Default::default()).consume_end())
-
         return self.elements[0].as_chumsky(name_lookup, case_convert)
 
     def as_chumsky_type(self, name_lookup, case_convert):
@@ -703,6 +707,16 @@ class AstAlternation:
     def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
         assert len(var_names) == 1
         yield f"{var_names[0]}.traverse(visitor)"
+
+    def last_terminal(self, name_lookup, case_convert):
+        if not self.elements:
+            return None
+        last = self.elements[0].last_terminal(name_lookup, case_convert)
+        for element in self.elements[1:]:
+            last2 = element.last_terminal(name_lookup, case_convert)
+            if last2 != last:
+                last = None
+        return last
 
     def __eq__(self, other):
         return type(self) == type(other) and self.elements == other.elements
@@ -775,6 +789,11 @@ class AstConcatenation:
         for element, var_name in zip(self.elements, var_names):
             yield from element.generate_traverse(name_lookup, case_convert, [var_name], mutable)
 
+    def last_terminal(self, name_lookup, case_convert):
+        if not self.elements:
+            return None
+        return self.elements[-1].last_terminal(name_lookup, case_convert)
+
     def __eq__(self, other):
         return type(self) == type(other) and self.elements == other.elements
 
@@ -844,7 +863,10 @@ class AstRepetition:
     def as_chumsky(self, name_lookup, case_convert):
         child = self.child.as_chumsky(name_lookup, case_convert)
         if self.mode == "?":
-            return f"{child}.or_not().boxed()"
+            # https://github.com/zesterer/chumsky/issues/159
+            #return f"{child}.or_not().boxed()"
+            # Note: * and + are still too greedy!
+            return f"{child}.map(Some).or(empty().map(|_| None)).boxed()"
         elif self.mode == "*":
             return f"{child}.repeated().boxed()"
         elif self.mode == "+":
@@ -889,6 +911,13 @@ class AstRepetition:
         for line in self.child.generate_traverse(name_lookup, case_convert, child_var_names, mutable):
             yield f"    {line}"
         yield "}"
+
+    def last_terminal(self, name_lookup, case_convert):
+        if self.mode == "+":
+            return self.child.last_terminal(name_lookup, case_convert)
+        elif self.mode in "?*":
+            return None
+        assert False
 
     def __eq__(self, other):
         return type(self) == type(other) and self.child == other.child and self.mode == other.mode
@@ -1013,7 +1042,7 @@ class AstLiteral:
         return ParserFactory().term(case_convert(self.as_symbol()))
 
     def as_chumsky(self, name_lookup, case_convert):
-        return f"just(types::TerminalToken::new_pattern(TokenType::{case_convert(self.as_symbol())})).map_with_span(Pt{case_convert(self.as_symbol())}::new).boxed()"
+        return f"one_of([types::TerminalToken::new_pattern(TokenType::{case_convert(self.as_symbol())})]).map_with_span(Pt{case_convert(self.as_symbol())}::new).boxed()"
 
     def as_chumsky_type(self, name_lookup, case_convert):
         return f"Pt{case_convert(self.as_symbol())}<L>"
@@ -1027,6 +1056,9 @@ class AstLiteral:
     def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
         assert len(var_names) == 1
         yield f"visitor.visit_{case_convert(self.as_symbol())}({var_names[0]})?;"
+
+    def last_terminal(self, name_lookup, case_convert):
+        return case_convert(self.as_symbol())
 
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
@@ -1073,7 +1105,7 @@ class AstReference:
     def as_chumsky(self, name_lookup, case_convert):
         if self.s in name_lookup:
             return f"{name_lookup[self.s]}.clone().map(Box::new)"
-        return f"just(types::TerminalToken::new_pattern(TokenType::{self.s})).map_with_span(Pt{self.s}::new).boxed()"
+        return f"one_of([types::TerminalToken::new_pattern(TokenType::{self.s})]).map_with_span(Pt{self.s}::new).boxed()"
 
     def as_chumsky_type(self, name_lookup, case_convert):
         if self.s in name_lookup:
@@ -1094,6 +1126,12 @@ class AstReference:
             yield f"visitor.visit_{self.s}({var_names[0]}.as_mut())?;"
         else:
             yield f"visitor.visit_{self.s}({var_names[0]}.as_ref())?;"
+
+    def last_terminal(self, name_lookup, case_convert):
+        if self.s in name_lookup:
+            # TODO: should maybe dereference the rule
+            return None
+        return self.s
 
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
@@ -1173,6 +1211,9 @@ class AstCharacterSet:
 
     def generate_traverse(self, name_lookup, case_convert, var_names, mutable):
         raise ValueError("character sets are only allowed within the context of token rules")
+
+    def last_terminal(self, name_lookup, case_convert):
+        return None
 
     def __eq__(self, other):
         return type(self) == type(other) and self.s == other.s
@@ -1504,48 +1545,6 @@ where
 
         fil.write("""\
 }
-
-/// Internal type used to propagate the text and span information from the
-/// token list into the parse tree. This is necessary because Chumsky's
-/// [just()] parser and friends place a clone of the token pattern into the
-/// parse tree, rather than cloning the incoming token. [filter()] could work,
-/// but can't derive which tokens were expected when constructing the error
-/// message (for obvious reasons). [chumsky::custom()] and otherwise
-/// implementing [chumsky::Parser] manually is also not possible, because
-/// the necessary members of [chumsky::Stream] are private to the crate
-/// (d'oh). So, here we are.
-pub struct Annotator<'a, L: types::Location = types::SingleFileLocation> {
-    tokens: &'a [types::TerminalToken<TokenType, L>]
-}
-
-impl<'a, L: types::Location> Annotator<'a, L> {
-    pub fn new(tokens: &'a [types::TerminalToken<TokenType, L>]) -> Self {
-        Self { tokens }
-    }
-}
-
-impl<'a, L: types::Location> VisitorMut<L> for Annotator<'a, L> {
-""")
-
-        first = True
-        for name in grammar.token_rules:
-            if name == "_":
-                continue
-            if first:
-                first = False
-            else:
-                fil.write("\n")
-            fil.write(f"""\
-    fn visit_{name}(&mut self, x: &mut Pt{name}<L>) -> Result<(), ()> {{
-        if let Some(data) = x.data.as_mut() {{
-            data.annotate_from_token_list(self.tokens);
-        }}
-        Ok(())
-    }}
-""")
-        fil.write("""\
-}
-
 """)
 
 

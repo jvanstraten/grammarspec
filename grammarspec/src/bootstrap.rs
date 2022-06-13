@@ -1293,78 +1293,89 @@ fn make_parsers<'a, L: types::Location + 'static>() -> (
             .at_least(1)
             .boxed()
             .map(|x| PtGrammar(x))
+            .labelled("Grammar")
             .boxed(),
     );
 
     parse_Rule.define(
-        just(types::TerminalToken::new_pattern(TokenType::Doc))
+        one_of([types::TerminalToken::new_pattern(TokenType::Doc)])
             .map_with_span(PtDoc::new)
             .boxed()
-            .or_not()
+            .map(Some)
+            .or(empty().map(|_| None))
             .boxed()
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::Symbol))
+                one_of([types::TerminalToken::new_pattern(TokenType::Symbol)])
                     .map_with_span(PtSymbol::new)
                     .boxed(),
             )
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::ColEqEq))
+                one_of([types::TerminalToken::new_pattern(TokenType::ColEqEq)])
                     .map_with_span(PtColEqEq::new)
                     .boxed(),
             )
             .then(parse_Alternation.clone().map(Box::new))
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::Sem))
+                one_of([types::TerminalToken::new_pattern(TokenType::Sem)])
                     .map_with_span(PtSem::new)
                     .boxed(),
             )
             .map(|((((x1, x2), x3), x4), x5)| (x1, x2, x3, x4, x5))
             .boxed()
             .map(|(x1, x2, x3, x4, x5)| PtRule::TokenRule(x1, x2, x3, x4, x5))
-            .or(just(types::TerminalToken::new_pattern(TokenType::Doc))
+            .or(one_of([types::TerminalToken::new_pattern(TokenType::Doc)])
                 .map_with_span(PtDoc::new)
                 .boxed()
-                .or_not()
+                .map(Some)
+                .or(empty().map(|_| None))
                 .boxed()
                 .then(
-                    just(types::TerminalToken::new_pattern(TokenType::Usc))
+                    one_of([types::TerminalToken::new_pattern(TokenType::Usc)])
                         .map_with_span(PtUsc::new)
                         .boxed(),
                 )
                 .then(
-                    just(types::TerminalToken::new_pattern(TokenType::ColEqEq))
+                    one_of([types::TerminalToken::new_pattern(TokenType::ColEqEq)])
                         .map_with_span(PtColEqEq::new)
                         .boxed(),
                 )
                 .then(parse_Alternation.clone().map(Box::new))
                 .then(
-                    just(types::TerminalToken::new_pattern(TokenType::Sem))
+                    one_of([types::TerminalToken::new_pattern(TokenType::Sem)])
                         .map_with_span(PtSem::new)
                         .boxed(),
                 )
                 .map(|((((x1, x2), x3), x4), x5)| (x1, x2, x3, x4, x5))
                 .boxed()
                 .map(|(x1, x2, x3, x4, x5)| PtRule::WhitespaceRule(x1, x2, x3, x4, x5)))
-            .or(just(types::TerminalToken::new_pattern(TokenType::Doc))
+            .or(one_of([types::TerminalToken::new_pattern(TokenType::Doc)])
                 .map_with_span(PtDoc::new)
                 .boxed()
-                .or_not()
+                .map(Some)
+                .or(empty().map(|_| None))
                 .boxed()
                 .then(
-                    just(types::TerminalToken::new_pattern(TokenType::Symbol))
+                    one_of([types::TerminalToken::new_pattern(TokenType::Symbol)])
                         .map_with_span(PtSymbol::new)
                         .boxed(),
                 )
                 .then(parse_FirstAlter.clone().map(Box::new))
                 .then(parse_SubseqAlter.clone().map(Box::new).repeated().boxed())
                 .then(
-                    just(types::TerminalToken::new_pattern(TokenType::Sem))
+                    one_of([types::TerminalToken::new_pattern(TokenType::Sem)])
                         .map_with_span(PtSem::new)
                         .boxed(),
                 )
                 .map(|((((x1, x2), x3), x4), x5)| (x1, x2, x3, x4, x5))
                 .boxed()
                 .map(|(x1, x2, x3, x4, x5)| PtRule::GrammarRule(x1, x2, x3, x4, x5)))
+            .recover_with(
+                skip_until([types::TerminalToken::new_pattern(TokenType::Sem)], |_| {
+                    Default::default()
+                })
+                .consume_end(),
+            )
+            .labelled("Rule")
             .boxed(),
     );
 
@@ -1373,7 +1384,7 @@ fn make_parsers<'a, L: types::Location + 'static>() -> (
             .clone()
             .map(Box::new)
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::Bar))
+                one_of([types::TerminalToken::new_pattern(TokenType::Bar)])
                     .map_with_span(PtBar::new)
                     .boxed()
                     .then(parse_Concatenation.clone().map(Box::new))
@@ -1385,59 +1396,86 @@ fn make_parsers<'a, L: types::Location + 'static>() -> (
             .map(|(x1, x2)| (x1, x2))
             .boxed()
             .map(|(x1, x2)| PtAlternation(x1, x2))
+            .labelled("Alternation")
             .boxed(),
     );
 
     parse_FirstAlter.define(
-        just(types::TerminalToken::new_pattern(TokenType::Doc))
+        one_of([types::TerminalToken::new_pattern(TokenType::Doc)])
             .map_with_span(PtDoc::new)
             .boxed()
-            .or_not()
+            .map(Some)
+            .or(empty().map(|_| None))
             .boxed()
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::ColColEq))
+                one_of([types::TerminalToken::new_pattern(TokenType::ColColEq)])
                     .map_with_span(PtColColEq::new)
                     .boxed(),
             )
             .then(parse_Concatenation.clone().map(Box::new))
-            .then(parse_AlterName.clone().map(Box::new).or_not().boxed())
+            .then(
+                parse_AlterName
+                    .clone()
+                    .map(Box::new)
+                    .map(Some)
+                    .or(empty().map(|_| None))
+                    .boxed(),
+            )
             .map(|(((x1, x2), x3), x4)| (x1, x2, x3, x4))
             .boxed()
             .map(|(x1, x2, x3, x4)| PtFirstAlter(x1, x2, x3, x4))
+            .labelled("FirstAlter")
             .boxed(),
     );
 
     parse_SubseqAlter.define(
-        just(types::TerminalToken::new_pattern(TokenType::Doc))
+        one_of([types::TerminalToken::new_pattern(TokenType::Doc)])
             .map_with_span(PtDoc::new)
             .boxed()
-            .or_not()
+            .map(Some)
+            .or(empty().map(|_| None))
             .boxed()
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::Bar))
+                one_of([types::TerminalToken::new_pattern(TokenType::Bar)])
                     .map_with_span(PtBar::new)
                     .boxed(),
             )
             .then(parse_Concatenation.clone().map(Box::new))
-            .then(parse_AlterName.clone().map(Box::new).or_not().boxed())
+            .then(
+                parse_AlterName
+                    .clone()
+                    .map(Box::new)
+                    .map(Some)
+                    .or(empty().map(|_| None))
+                    .boxed(),
+            )
             .map(|(((x1, x2), x3), x4)| (x1, x2, x3, x4))
             .boxed()
             .map(|(x1, x2, x3, x4)| PtSubseqAlter(x1, x2, x3, x4))
+            .labelled("SubseqAlter")
             .boxed(),
     );
 
     parse_AlterName.define(
-        just(types::TerminalToken::new_pattern(TokenType::MinGt))
+        one_of([types::TerminalToken::new_pattern(TokenType::MinGt)])
             .map_with_span(PtMinGt::new)
             .boxed()
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::Symbol))
+                one_of([types::TerminalToken::new_pattern(TokenType::Symbol)])
                     .map_with_span(PtSymbol::new)
                     .boxed(),
             )
             .map(|(x1, x2)| (x1, x2))
             .boxed()
             .map(|(x1, x2)| PtAlterName(x1, x2))
+            .recover_with(
+                skip_until(
+                    [types::TerminalToken::new_pattern(TokenType::Symbol)],
+                    |_| Default::default(),
+                )
+                .consume_end(),
+            )
+            .labelled("AlterName")
             .boxed(),
     );
 
@@ -1449,6 +1487,7 @@ fn make_parsers<'a, L: types::Location + 'static>() -> (
             .at_least(1)
             .boxed()
             .map(|x| PtConcatenation(x))
+            .labelled("Concatenation")
             .boxed(),
     );
 
@@ -1457,7 +1496,7 @@ fn make_parsers<'a, L: types::Location + 'static>() -> (
             .clone()
             .map(Box::new)
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::Qst))
+                one_of([types::TerminalToken::new_pattern(TokenType::Qst)])
                     .map_with_span(PtQst::new)
                     .boxed(),
             )
@@ -1468,7 +1507,7 @@ fn make_parsers<'a, L: types::Location + 'static>() -> (
                 .clone()
                 .map(Box::new)
                 .then(
-                    just(types::TerminalToken::new_pattern(TokenType::Ast))
+                    one_of([types::TerminalToken::new_pattern(TokenType::Ast)])
                         .map_with_span(PtAst::new)
                         .boxed(),
                 )
@@ -1479,7 +1518,7 @@ fn make_parsers<'a, L: types::Location + 'static>() -> (
                 .clone()
                 .map(Box::new)
                 .then(
-                    just(types::TerminalToken::new_pattern(TokenType::Pls))
+                    one_of([types::TerminalToken::new_pattern(TokenType::Pls)])
                         .map_with_span(PtPls::new)
                         .boxed(),
                 )
@@ -1490,45 +1529,48 @@ fn make_parsers<'a, L: types::Location + 'static>() -> (
                 .clone()
                 .map(Box::new)
                 .map(|x| PtRepetition::One(x)))
+            .labelled("Repetition")
             .boxed(),
     );
 
     parse_Singular.define(
-        just(types::TerminalToken::new_pattern(TokenType::Lp))
+        one_of([types::TerminalToken::new_pattern(TokenType::Lp)])
             .map_with_span(PtLp::new)
             .boxed()
             .then(parse_Alternation.clone().map(Box::new))
             .then(
-                just(types::TerminalToken::new_pattern(TokenType::Rp))
+                one_of([types::TerminalToken::new_pattern(TokenType::Rp)])
                     .map_with_span(PtRp::new)
                     .boxed(),
             )
             .map(|((x1, x2), x3)| (x1, x2, x3))
-            .recover_with(skip_until([types::TerminalToken::new_pattern(TokenType::Sem)], |_| Default::default()).consume_end())
             .boxed()
             .map(|(x1, x2, x3)| PtSingular::Nested(x1, x2, x3))
-            .or(just(types::TerminalToken::new_pattern(TokenType::Symbol))
-                .map_with_span(PtSymbol::new)
-                .boxed()
-                .map(|x| PtSingular::Symbol(x)))
             .or(
-                just(types::TerminalToken::new_pattern(TokenType::StringLiteral))
+                one_of([types::TerminalToken::new_pattern(TokenType::Symbol)])
+                    .map_with_span(PtSymbol::new)
+                    .boxed()
+                    .map(|x| PtSingular::Symbol(x)),
+            )
+            .or(
+                one_of([types::TerminalToken::new_pattern(TokenType::StringLiteral)])
                     .map_with_span(PtStringLiteral::new)
                     .boxed()
                     .map(|x| PtSingular::StringLiteral(x)),
             )
             .or(
-                just(types::TerminalToken::new_pattern(TokenType::CharacterSet))
+                one_of([types::TerminalToken::new_pattern(TokenType::CharacterSet)])
                     .map_with_span(PtCharacterSet::new)
                     .boxed()
                     .map(|x| PtSingular::CharacterSet(x)),
             )
-            .or(just(types::TerminalToken::new_pattern(
+            .or(one_of([types::TerminalToken::new_pattern(
                 TokenType::CharacterLiteral,
-            ))
+            )])
             .map_with_span(PtCharacterLiteral::new)
             .boxed()
             .map(|x| PtSingular::CharacterLiteral(x)))
+            .labelled("Singular")
             .boxed(),
     );
 
@@ -1806,138 +1848,5 @@ where
     #[allow(non_snake_case)]
     fn visit_Singular(&mut self, x: &mut PtSingular<L>) -> Result<(), E> {
         x.traverse_mut(self)
-    }
-}
-
-/// Internal type used to propagate the text and span information from the
-/// token list into the parse tree. This is necessary because Chumsky's
-/// [just()] parser and friends place a clone of the token pattern into the
-/// parse tree, rather than cloning the incoming token. [filter()] could work,
-/// but can't derive which tokens were expected when constructing the error
-/// message (for obvious reasons). [chumsky::custom()] and otherwise
-/// implementing [chumsky::Parser] manually is also not possible, because
-/// the necessary members of [chumsky::Stream] are private to the crate
-/// (d'oh). So, here we are.
-pub struct Annotator<'a, L: types::Location = types::SingleFileLocation> {
-    tokens: &'a [types::TerminalToken<TokenType, L>],
-}
-
-impl<'a, L: types::Location> Annotator<'a, L> {
-    pub fn new(tokens: &'a [types::TerminalToken<TokenType, L>]) -> Self {
-        Self { tokens }
-    }
-}
-
-impl<'a, L: types::Location> VisitorMut<L> for Annotator<'a, L> {
-    fn visit_ColEqEq(&mut self, x: &mut PtColEqEq<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Sem(&mut self, x: &mut PtSem<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Usc(&mut self, x: &mut PtUsc<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Symbol(&mut self, x: &mut PtSymbol<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Bar(&mut self, x: &mut PtBar<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_ColColEq(&mut self, x: &mut PtColColEq<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_MinGt(&mut self, x: &mut PtMinGt<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Qst(&mut self, x: &mut PtQst<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Ast(&mut self, x: &mut PtAst<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Pls(&mut self, x: &mut PtPls<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Lp(&mut self, x: &mut PtLp<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Rp(&mut self, x: &mut PtRp<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_StringLiteral(&mut self, x: &mut PtStringLiteral<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_CharacterSet(&mut self, x: &mut PtCharacterSet<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_CharacterLiteral(&mut self, x: &mut PtCharacterLiteral<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
-    }
-
-    fn visit_Doc(&mut self, x: &mut PtDoc<L>) -> Result<(), ()> {
-        if let Some(data) = x.data.as_mut() {
-            data.annotate_from_token_list(self.tokens);
-        }
-        Ok(())
     }
 }
