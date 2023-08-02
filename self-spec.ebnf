@@ -1,6 +1,6 @@
-grammar	::= rule+                                          	; // A grammar is a list of one or more rules
+grammar	::= rule+                                          	; /// A grammar is a list of one or more rules
 rule   	                                                   	  // A rule can be either a grammar or a tokenizer rule. If a rule is defined more than once, each definition will just add to the alternatives
-       	::= doc? symbol ":==" alternation ";" -> token-rule	  /* A tokenizer rule, of the form `symbol :== pattern ;`. The tokenizer (if any) is expected to tokenize the input as follows:
+       	::= doc? symbol ":==" alternation ";" -> token-rule	  /** A tokenizer rule, of the form `symbol :== pattern ;`. The tokenizer (if any) is expected to tokenize the input as follows:
        	- try matching the _ token rule and all named token rules that are *directly* referred to from grammar production rules on the remainder of the input;
        	- emit the token corresponding to the longest match to the parser, or drop it if said longest match is the _ token;
        	   - if there is a tie in match lengths, emit the token that was defined earlier in the grammar (the first definition is what counts, if there are multiple);
@@ -13,17 +13,17 @@ rule   	                                                   	  // A rule can be e
        	                                                              	  // Whenever literal patterns are used in a grammar rule, they are implicitly converted to a token rule. Be mindful of this when writing the grammar: they can cause tokenizer conflicts just like any other token!
        	                                                              	;
 
-symbol            	:== [a-z] [a-z0-9#-]*                     	; // name-is-kebab-case, autoconverted to the appropriate case conventions for the target language
+symbol            	:== [a-z] [a-z0-9#-]*                     	; /// name-is-kebab-case, autoconverted to the appropriate case conventions for the target language
 alternation       	::=            concatenation              	 
-                  	          ("|" concatenation)*            	; // `a | b | ...` preferentially matches `a`, matches `b` if `a` does not match, and so on
-first-alter       	::= doc? "::=" concatenation alter-name?  	; // alternatives at the root of a grammar production rule can be annotated with a variant name (if not specified it is auto-generated when needed) at the end and can be given a docstring before the ::= or | that starts the variant. They are functionally indistinguishable from a normal, nested alternation, though the parse tree may be generated in a different way.
-subseq-alter      	::= doc?   "|" concatenation alter-name?  	; //
-alter-name        	::= "->" symbol                           	; // A toplevel alternative can be named by appending `-> name`. The names do not have semantical meaning (they cannot be referred to within the grammar), but are used to attach names to variants in the generated ASTs.
-concatenation     	::= repetition+                           	; // `a b ...` matches `a` followed by `b` and so on.
+                  	          ("|" concatenation)*            	; /// `a | b | ...` preferentially matches `a`, matches `b` if `a` does not match, and so on
+first-alter       	::= doc? "::=" concatenation alter-name?  	; /// alternatives at the root of a grammar production rule can be annotated with a variant name (if not specified it is auto-generated when needed) at the end and can be given a docstring before the ::= or | that starts the variant. They are functionally indistinguishable from a normal, nested alternation, though the parse tree may be generated in a different way.
+subseq-alter      	::= doc?   "|" concatenation alter-name?  	; ///
+alter-name        	::= "->" symbol                           	; /// A toplevel alternative can be named by appending `-> name`. The names do not have semantical meaning (they cannot be referred to within the grammar), but are used to attach names to variants in the generated ASTs.
+concatenation     	::= repetition+                           	; /// `a b ...` matches `a` followed by `b` and so on.
 repetition        	::= singular "?" -> maybe                 	  // `a?` greedily matches `a` zero         times or once
                   	  | singular "*" -> any                   	  // `a*` greedily matches `a` zero or more times
                   	  | singular "+" -> many                  	  // `a+` greedily matches `a` one  or more times
-                  	  | singular     -> one                   	; // `a`           matches `a`               exactly once. Must come last in the list of alternatives, because otherwise the other alternatives would never match (because alternatives pick the *first* match, not the longest one)
+                  	  | singular     -> one                   	; /// `a`           matches `a`               exactly once. Must come last in the list of alternatives, because otherwise the other alternatives would never match (because alternatives pick the *first* match, not the longest one)
 singular          	::= "(" alternation ")" -> nested         	  // A single literal pattern or referenced rule to match, or a parenthesized expression.
                   	  | symbol                                	   
                   	  | string-literal                        	   
@@ -33,16 +33,16 @@ string-literal    	:== "'" ( [^'##] | ## [^] )+ "'"          	   
                   	  | '"' ( [^"##] | ## [^] )+ '"'          	;  // `'...'` and `"..."` match `...` literally. Empty string literals are not supported; instead use `?`.
 character-set     	:== "[" "^"? (     character-set-char     	 
                   	             ( "-" character-set-char )?)*	 
-                  	    "]"                                   	; // `[...]` matches a single character within the specified set. `a-z` may be used to select a whole range of code points, and a `^` at the front of the `...` inverts the set.
-character-set-char	:== [^#^#-#]##] | escape-sequence         	; // Within a character set, the characters `^-]#` have special meaning. Prefix them with a `#` to match them literally.
-character-literal 	:==               escape-sequence         	; // Hash escape sequences for characters can also be matched outside the context of a string or character range.
+                  	    "]"                                   	; /// `[...]` matches a single character within the specified set. `a-z` may be used to select a whole range of code points, and a `^` at the front of the `...` inverts the set.
+character-set-char	:== [^#^#-#]##] | escape-sequence         	; /// Within a character set, the characters `^-]#` have special meaning. Prefix them with a `#` to match them literally.
+character-literal 	:==               escape-sequence         	; /// Hash escape sequences for characters can also be matched outside the context of a string or character range.
 
 escape-sequence           	:== ## (                                	  // A hash escape sequence for a special character
                           	  [^xuU]              |                 	  //
                           	  "x" hex hex         |                 	 
                           	  "u" hex hex hex hex |                 	 
                           	  "U" hex hex hex hex hex hex hex hex   	 
-                          	)                                       	; /*		 
+                          	)                                       	; /**		 
   `#t`                    	short for `#x09`                        	(tab)
   `#n`                    	short for `#x0A`                        	(LF/newline)
   `#r`                    	short for `#x0D`                        	(CR/carriage return)
@@ -50,8 +50,8 @@ escape-sequence           	:== ## (                                	  // A hash
   `#'` `#"`               	matches `'` `"`    literally            	(for use within `'`/`"`-delimited strings)
   `#-` `#^` `#]`          	matches `-` ^` `]` literally            	(for use within character sets)
   `#xHH` `#uHHHH` `#UH{8}`	matches the given 8/16/32-bit code point	, expressed with 2 / 4 / 8 hex digits */
-hex                       	:== [0-9a-fA-F]                         	; // A hex digit
-doc                       	:== "/**"       comment-body    "*/"    	; // /** comments are treated as docstrings. They may only appear immediately in front of a rule or toplevel alternative in a grammar production rule.
-_                         	:== "/*" ( [^*] comment-body )? "*/"    	; // Normal /* comments can appear anywhere
-comment-body              	:==      ( [^*] | "*"+ [^*/] )* "*"*    	; // The body of a comment. Some magic is needed here to ensure that the body doesn't match the comment end sequence anywhere in it; we can't just match any character because the start of the first comment in the file would greedily match right up to the end of the last comment in the file
-_                         	:== [ #t#n#r]+                          	; // Whitespace can appear anywhere
+hex                       	:== [0-9a-fA-F]                         	; /// A hex digit
+doc                       	:== "/**"       comment-body    "*/"    	; /// /** comments are treated as docstrings. They may only appear immediately in front of a rule or toplevel alternative in a grammar production rule.
+_                         	:== "/*" ( [^*] comment-body )? "*/"    	; /// Normal /* comments can appear anywhere
+comment-body              	:==      ( [^*] | "*"+ [^*/] )* "*"*    	; /// The body of a comment. Some magic is needed here to ensure that the body doesn't match the comment end sequence anywhere in it; we can't just match any character because the start of the first comment in the file would greedily match right up to the end of the last comment in the file
+_                         	:== [ #t#n#r]+                          	; /// Whitespace can appear anywhere
